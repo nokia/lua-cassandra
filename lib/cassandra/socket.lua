@@ -56,7 +56,7 @@ do
       local ssl = require 'ssl'
       local params = {
         mode = 'client',
-        protocol = 'tlsv1',
+        protocol = 'tlsv1_2',
         key = opts.key,
         certificate = opts.cert,
         cafile = opts.cafile,
@@ -161,18 +161,37 @@ do
       end
 
       local socket = require 'socket'
-
-      return setmetatable({
-        sock = socket.tcp(...)
-      }, proxy_mt)
+      local ccas_address_family = os.getenv("CCAS_ADDRESS_FAMILY")
+      if ccas_address_family == nil then
+        ccas_address_family = ""
+      end
+      if ccas_address_family:lower() == "ipv6" then
+        return setmetatable({
+          sock = socket.tcp6(...)
+        }, proxy_mt)
+      else
+        return setmetatable({
+          sock = socket.tcp(...)
+        }, proxy_mt)
+      end
     end
   else
     local socket = require 'socket'
 
     function _M.tcp(...)
-      return setmetatable({
-        sock = socket.tcp(...)
-      }, proxy_mt)
+      local ccas_address_family = os.getenv("CCAS_ADDRESS_FAMILY")
+      if ccas_address_family == nil then
+        ccas_address_family = ""
+      end
+      if ccas_address_family:lower() == "ipv6" then
+        return setmetatable({
+          sock = socket.tcp6(...)
+        }, proxy_mt)
+      else
+        return setmetatable({
+          sock = socket.tcp(...)
+        }, proxy_mt)
+      end
     end
   end
 end
