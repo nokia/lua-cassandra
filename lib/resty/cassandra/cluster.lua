@@ -7,6 +7,7 @@
 local resty_lock = require 'resty.lock'
 local cassandra = require 'cassandra'
 local cql = require 'cassandra.cql'
+local kong_log = require 'kong.cmd.utils.log'
 
 local update_time = ngx.update_time
 local cql_errors = cql.errors
@@ -64,8 +65,8 @@ local function set_peer(self, host, up, reconn_delay, unhealthy_at,
   return true
 end
 
-local function add_peer(self, host, data_center)
-  return set_peer(self, host, true, 0, 0, data_center, "")
+local function add_peer(self, host, data_center, release_version)
+  return set_peer(self, host, true, 0, 0, data_center, release_version)
 end
 
 local function get_peer(self, host, status)
@@ -431,7 +432,11 @@ local function next_coordinator(self, coordinator_options)
         errors[peer_rec.host] = err
       end
     elseif err then
-      return nil, err
+      -- In production environment, Kong is connected to a production grade
+      -- Cassandra cluster. In the event of a node connection failure, we want
+      -- to try again with another one, without returning an error to the end user.
+      errors[peer_rec.host] = 'host considered dead'
+      log(DEBUG, _log_prefix, 'host considered dead: ',  peer_rec.host)
     else
       errors[peer_rec.host] = 'host still considered down'
     end
@@ -505,7 +510,7 @@ function _Cluster:refresh()
     end
 
     rows[#rows+1] = { -- local host
-      rpc_address = local_addr,
+      rpc_address = coordinator.host,
       data_center = local_rows[1].data_center,
       release_version = local_rows[1].release_version
     }
@@ -594,6 +599,7 @@ local function check_schema_consensus(coordinator)
 end
 
 local function wait_schema_consensus(self, coordinator, timeout)
+  local start_time = ngx.time()
   timeout = timeout or self.max_schema_consensus_wait
   local peers, err = get_peers(self)
   if err then return nil, err
@@ -606,16 +612,14 @@ local function wait_schema_consensus(self, coordinator, timeout)
   local tstart = get_now()
 
   repeat
-    -- disabled because this method is currently used outside of an
-    -- ngx_lua compatible context by production applications.
-    -- no fallback implemented yet.
-    --ngx.sleep(0.5)
+    ngx.sleep(0.5)
 
     update_time()
     ok, err = check_schema_consensus(coordinator)
     tdiff = get_now() - tstart
   until ok or err or tdiff >= timeout
 
+  kong_log.debug("Wait for schema consensus. Time (seconds): " .. tostring(ngx.time() - start_time))
   if ok then
     return ok
   elseif err then
@@ -949,6 +953,15 @@ do
   -- for this query.
   function _Cluster:iterate(query, args, options)
     return page_iterator(self, query, args, options)
+  end
+
+  function _Cluster:refresh_load_balancer()
+    local peers, err = get_peers(self)
+    if err then
+      return false, err
+    end
+    self.lb_policy:init(peers)
+    return true
   end
 end
 
